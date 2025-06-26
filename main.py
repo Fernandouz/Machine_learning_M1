@@ -39,9 +39,9 @@ def prepare_and_split_data():
     # --- SUPPRESSION DES VALEURS ABERRANTES PAR SECTION ---
     def filtrer_groupe(groupe):
         q_low = groupe["valeur_fonciere"].quantile(0.1)
-        q_high = groupe["valeur_fonciere"].quantile(0.9)
+        q_high = groupe["valeur_fonciere"].quantile(0.95)
         return groupe[
-            (groupe["valeur_fonciere"] >= q_low) & (groupe["valeur_fonciere"] <= q_high) &
+            (groupe["valeur_fonciere"] >= q_low) & (groupe["valeur_fonciere"] <= 2000000) &
             (groupe["surface_reelle_bati"] > 9)
         ]
     df = df.groupby("section_prefixe", group_keys=False).apply(filtrer_groupe)

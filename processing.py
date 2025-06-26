@@ -42,30 +42,47 @@ class MLModeler:
                 ('clf', LinearRegression())
             ])
             self.param_grid = {
-                'clf__fit_intercept': [True, False]
+                'clf__fit_intercept': [True, False],
+                'clf__positive': [False, True]
             }
-            self.scoring = 'neg_mean_squared_error'
+            # RMSE : sensible aux gros écarts, plus "métier" en immo
+            self.scoring = 'neg_root_mean_squared_error'
+            # Pour voir d'autres options :
+            # self.scoring_options = ['neg_mean_absolute_error', 'neg_mean_squared_error', 'neg_root_mean_squared_error', 'r2']
         elif model_type == "rf":
             print("[MLModeler] Pipeline : RandomForestRegressor")
             self.pipeline = Pipeline([
-                ('clf', RandomForestRegressor())
+                ('clf', RandomForestRegressor(random_state=42, n_jobs=-1))
             ])
             self.param_grid = {
-                'clf__n_estimators': [100, 200],
-                'clf__max_depth': [None, 10, 20]
+                'clf__n_estimators': [100, 200, 300],
+                'clf__max_depth': [None, 10, 20, 30],
+                'clf__min_samples_split': [2, 5, 10],
+                'clf__min_samples_leaf': [1, 2, 4],
+                'clf__max_features': ['auto', 'sqrt', 'log2'],
+                'clf__bootstrap': [True, False]
             }
+            # MAE est souvent préféré pour la robustesse sur outliers en RF
             self.scoring = 'neg_mean_absolute_error'
+            # Optionnel : tester aussi avec 'neg_root_mean_squared_error'
         elif model_type == "xgb":
             print("[MLModeler] Pipeline : XGBRegressor")
             self.pipeline = Pipeline([
-                ('clf', XGBRegressor(objective='reg:squarederror', verbosity=0))
+                ('clf', XGBRegressor(objective='reg:squarederror', verbosity=0, n_jobs=-1, random_state=42))
             ])
             self.param_grid = {
                 'clf__n_estimators': [100, 200],
-                'clf__learning_rate': [0.01, 0.1, 0.2],
-                'clf__max_depth': [3, 5, 7]
+                'clf__learning_rate': [0.05, 0.1],
+                'clf__max_depth': [3, 5],
+                'clf__subsample': [0.8, 1.0],
+                'clf__colsample_bytree': [0.8, 1.0],
+                'clf__reg_alpha': [0, 0.1],
+                'clf__reg_lambda': [1, 2]
+                # Tu peux rajouter gamma ou min_child_weight si tu veux, mais déjà ça fait 64 combinaisons
             }
+            # Pour XGB : RMSE est le plus classique (Kaggle Style)
             self.scoring = 'neg_root_mean_squared_error'
+            # Si tu fais du log-transform, 'neg_mean_squared_log_error' est ultra pertinent
         else:
             raise ValueError("[MLModeler] model_type inconnu : 'linreg', 'rf', 'xgb'")
         print(f"[MLModeler] Paramètres du pipeline initialisés.\n")
