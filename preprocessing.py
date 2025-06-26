@@ -1,117 +1,90 @@
 import pandas as pd
 import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.metrics.pairwise import haversine_distances
 
-class MutationPreprocessor:
+class FeatureEngineering(BaseEstimator, TransformerMixin):
     """
-    Pipeline de nettoyage 'ML Ready' pour données de mutation immobilière.
-    Suit les bonnes pratiques du document fourni (light cleaning, split, deep cleaning, etc.).
+    Transformer scikit-learn pour enrichir un dataset immobilier :
+    - Encodage one-hot de 'type_local'
+    - Ajout de features géographiques (distances aux POI)
     """
-
     def __init__(self):
-        # Stockage des bornes pour prix et valeur foncière (IQR)
-        self.iqr_bounds = {}
+        pass
 
-    ######################
-    # 1. LIGHT CLEANING  #
-    ######################
-    def _clean_basic(self, df):
-        """Nettoyage basique : doublons, types, date, filtres initiaux."""
-        df = df.copy()
+    def fit(self, X, y=None):
+        # Pas d'apprentissage ici
+        return self
 
-        # Supprimer les doublons exacts
-        df.drop_duplicates(inplace=True)
+    def transform(self, X):
+        X = X.copy()
+        X = self.encoder_type_local(X)
+        X = self.ajouter_distances_poi(X)
+        return X
 
-        # Convertir la date de mutation et extraire ses composantes
-        df["date_mutation"] = pd.to_datetime(df["date_mutation"], errors="coerce")
-        df["annee_mutation"] = df["date_mutation"].dt.year
-        df["mois_mutation"] = df["date_mutation"].dt.month
-        df["jour_mutation"] = df["date_mutation"].dt.day
-        df["jour_sem_mutation"] = df["date_mutation"].dt.weekday
+    def encoder_type_local(self, X):
+        if "type_local" in X.columns:
+            X = pd.get_dummies(X, columns=["type_local"], prefix="type_local")
+        else:
+            raise KeyError("La colonne 'type_local' est requise pour l'encodage.")
+        return X
 
-        # Garder uniquement les ventes appartement/maison valides
-        df = df[
-            (df["nature_mutation"] == "Vente") &
-            (df["type_local"].isin(["Appartement", "Maison"])) &
-            (df["surface_reelle_bati"].notna()) &
-            (df["valeur_fonciere"].notna())
-        ]
+    def ajouter_distances_poi(self, df_clean):
+        poi_dict = {
+            "creche": "creches.csv",
+            "maternelle": "maternelles.csv",
+            "elementaire": "ecole_elementaire.csv",
+            "arret": "arret_physique.csv"
+        }
+        for mode, path in poi_dict.items():
+            df_poi = charger_csv_sans_erreur(path)
+            df_poi = extraire_lat_lon(df_poi)
+            df_clean = compute_distances(df_clean, df_poi, mode, rayon_m=500)
 
-        # Préfixe section (cast sur les 3 premiers caractères)
-        df["section_prefixe"] = df["section_prefixe"].astype(str).str[:3]
-        df["section_prefixe"] = pd.to_numeric(df["section_prefixe"], errors="coerce").astype("Int32")
+        df_arrets = charger_csv_sans_erreur("arret_physique.csv")
+        df_arrets = extraire_lat_lon(df_arrets)
+        for mode_transport in ["bus", "metro", "tram"]:
+            if "CONC_MODE" in df_arrets.columns:
+                df_arrets_mode = df_arrets[df_arrets["CONC_MODE"].str.lower() == mode_transport]
+                df_clean = compute_distances(df_clean, df_arrets_mode, f"arret_{mode_transport}", rayon_m=500)
+        return df_clean
 
-        # Conversion numérique (hors colonnes catégorielles)
-        for col in df.columns:
-            if col not in ["type_local", "section_prefixe"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+# Fonctions utilitaires (hors classe)
+def charger_csv_sans_erreur(path, sep=";"):
+    try:
+        return pd.read_csv(path, sep=sep, on_bad_lines="skip")
+    except Exception as e:
+        print(f"Erreur lors du chargement de {path} : {e}")
+        return pd.DataFrame()
 
-        # Création prix au m² (arrondi)
-        df["prix_m2"] = (df["valeur_fonciere"] / df["surface_reelle_bati"]).round()
-
+def extraire_lat_lon(df):
+    df = df.copy()
+    if 'latitude' in df.columns and 'longitude' in df.columns:
+        df = df[df['latitude'].notna() & df['longitude'].notna()]
+        df['latitude'] = df['latitude'].astype(float)
+        df['longitude'] = df['longitude'].astype(float)
         return df
+    for col in df.columns:
+        if df[col].dtype == object and df[col].str.contains(",", regex=False).any():
+            try:
+                df[['latitude', 'longitude']] = df[col].str.split(",", expand=True).astype(float)
+                return df
+            except Exception:
+                continue
+    raise ValueError("❌ Aucune colonne de coordonnées valides trouvée dans ce DataFrame.")
 
-    def _select_features(self, df):
-        """Colonnes utiles pour le modèle (pré-split)."""
-        colonnes = [
-            "numero_disposition", "valeur_fonciere", "code_postal", "code_type_local",
-            "surface_reelle_bati", "nombre_pieces_principales", "longitude", "latitude",
-            "section_prefixe", "nombre_lots", "annee_mutation", "mois_mutation",
-            "jour_mutation", "jour_sem_mutation", "prix_m2", "type_local"
-        ]
-        return df[[col for col in colonnes if col in df.columns]]
-
-    ######################
-    # 2. DEEP CLEANING   #
-    ######################
-    def _compute_iqr_bounds(self, df, col):
-        """Calcule les bornes IQR pour une variable donnée."""
-        Q1 = df[col].quantile(0.25)
-        Q3 = df[col].quantile(0.75)
-        IQR = Q3 - Q1
-        return Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
-
-    def _remove_outliers(self, df):
-        """Filtrage des outliers sur les colonnes numériques clés."""
-        df = df.copy()
-        for col in ["valeur_fonciere", "prix_m2"]:
-            q_low, q_high = self._compute_iqr_bounds(df, col)
-            self.iqr_bounds[col] = (q_low, q_high)
-            df = df[(df[col] >= q_low) & (df[col] <= q_high)]
-
-        # Suppression des petits biens (< 9m²)
-        df = df[df["surface_reelle_bati"] > 9]
-        return df
-
-    def _apply_outlier_filter(self, df):
-        """Réapplique les filtres IQR appris (sans recalculer)."""
-        for col, (q_low, q_high) in self.iqr_bounds.items():
-            df = df[(df[col] >= q_low) & (df[col] <= q_high)]
-        df = df[df["surface_reelle_bati"] > 9]
-        return df
-
-    #############################
-    # 3. TRANSFORMATION (POST-SPLIT)
-    #############################
-    def _encode_features(self, df):
-        """One-hot encoding des colonnes catégorielles après split (pour éviter fuite)."""
-        return pd.get_dummies(df, columns=["type_local"], prefix="type_local")
-
-    #########################
-    # FIT_TRANSFORM & TRANSFORM
-    #########################
-
-    def fit_transform(self, df):
-        """Pipeline complet d'entraînement + nettoyage (train uniquement)."""
-        df = self._clean_basic(df)
-        df = self._select_features(df)
-        df = self._remove_outliers(df)
-        df = self._encode_features(df)
-        return df
-
-    def transform(self, df):
-        """Pipeline de transformation sur données de test/val (pas de recalcul)."""
-        df = self._clean_basic(df)
-        df = self._select_features(df)
-        df = self._apply_outlier_filter(df)
-        df = self._encode_features(df)
-        return df
+def compute_distances(df_clean, df_poi, mode, rayon_m=1000):
+    df_clean_valid = df_clean.dropna(subset=["latitude", "longitude"]).copy()
+    df_poi_valid = df_poi.dropna(subset=["latitude", "longitude"]).copy()
+    if len(df_poi_valid) == 0 or len(df_clean_valid) == 0:
+        return df_clean
+    biens_coords = np.radians(df_clean_valid[["latitude", "longitude"]].values)
+    poi_coords = np.radians(df_poi_valid[["latitude", "longitude"]].values)
+    distances = haversine_distances(biens_coords, poi_coords) * 6371000
+    df_clean_valid[f"dist_min_{mode}_m"] = distances.min(axis=1)
+    df_clean_valid[f"nb_{mode}_moins_{rayon_m}m"] = (distances < rayon_m).sum(axis=1)
+    df_clean = df_clean.merge(
+        df_clean_valid[[f"dist_min_{mode}_m", f"nb_{mode}_moins_{rayon_m}m"]],
+        left_index=True, right_index=True, how="left"
+    )
+    return df_clean
