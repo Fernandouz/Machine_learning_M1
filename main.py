@@ -1,11 +1,12 @@
 import os
 import pandas as pd
+import numpy as np
 from preprocessing import FeatureEngineering
 from processing import MLModeler
+from processing_dl import DLRegressor  # Assure-toi que ta classe est dispo dans ce fichier
 
 def prepare_and_split_data():
     RAW_CSV = 'tlse_raw_data.csv'
-    # Vérifie si les fichiers existent déjà pour éviter les re-splits inutiles
     if all([os.path.exists(f) for f in [
         "data_train/X_train.csv", "data_train/y_train.csv",
         "data_train/X_val.csv",   "data_train/y_val.csv",
@@ -18,7 +19,6 @@ def prepare_and_split_data():
     df = pd.read_csv(RAW_CSV, low_memory=False)
     print(f"[main] Lignes initiales : {len(df)}")
 
-    # --- FILTRAGE DES LIGNES ---
     df = df[
         (df["nature_mutation"] == "Vente") &
         (df["type_local"].notna()) &
@@ -28,7 +28,6 @@ def prepare_and_split_data():
     ].copy()
     print(f"[main] Après filtrage ventes appart/maison + valeurs non manquantes : {len(df)}")
 
-    # --- CONVERSION DES TYPES ---
     df["date_mutation"] = pd.to_datetime(df["date_mutation"], format="%Y-%m-%d", errors="coerce")
     for col in df.columns:
         if col not in ["type_local", "section_prefixe"]:
@@ -36,7 +35,6 @@ def prepare_and_split_data():
     df["section_prefixe"] = df["section_prefixe"].astype(str).str[:3]
     df["section_prefixe"] = pd.to_numeric(df["section_prefixe"], errors="coerce").astype("Int32")
 
-    # --- SUPPRESSION DES VALEURS ABERRANTES PAR SECTION ---
     def filtrer_groupe(groupe):
         q_low = groupe["valeur_fonciere"].quantile(0.1)
         q_high = groupe["valeur_fonciere"].quantile(0.95)
@@ -47,7 +45,6 @@ def prepare_and_split_data():
     df = df.groupby("section_prefixe", group_keys=False).apply(filtrer_groupe)
     print(f"[main] Après suppression des valeurs extrêmes : {len(df)}")
 
-    # --- SÉLECTION DES COLONNES FINALES ---
     colonnes = [
         "numero_disposition",
         "valeur_fonciere",
@@ -62,7 +59,6 @@ def prepare_and_split_data():
     df = df[colonnes]
     print(f"[main] Colonnes finales : {df.shape[1]}")
 
-    # --- SPLIT TRAIN / VAL / TEST ---
     from sklearn.model_selection import train_test_split
     X = df.drop(columns=["valeur_fonciere"])
     y = df["valeur_fonciere"]
@@ -75,14 +71,12 @@ def prepare_and_split_data():
 
     print(f"[main] Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
 
-    # --- AJOUT DES PRIX AU M² MÉDIANS PAR QUARTIER ---
     prix_m2_train = y_train / X_train["surface_reelle_bati"]
     medianes_par_quartier = prix_m2_train.groupby(X_train["section_prefixe"]).median().round(2)
     X_train["prix_m2_quartier"] = X_train["section_prefixe"].map(medianes_par_quartier)
     X_val["prix_m2_quartier"] = X_val["section_prefixe"].map(medianes_par_quartier)
     X_test["prix_m2_quartier"] = X_test["section_prefixe"].map(medianes_par_quartier)
 
-    # --- SAUVEGARDE DES SPLITS ---
     os.makedirs("data_train", exist_ok=True)
     os.makedirs("data_test", exist_ok=True)
     X_train.to_csv("data_train/X_train.csv", index=False)
@@ -94,12 +88,10 @@ def prepare_and_split_data():
     print("[main] Données prétraitées et splits sauvegardés.")
 
 def main():
-    print("\n========= PIPELINE ML MULTI-ALGO =========\n")
-
-    # 0. Préprocessing initial et split si besoin
+    print("\n========= PIPELINE ML/DL MULTI-ALGO =========\n")
     prepare_and_split_data()
 
-    # 1. Chargement des datasets
+    # Chargement des datasets
     print("[main] Chargement des splits X_train, y_train, X_val, y_val...")
     X_train = pd.read_csv('data_train/X_train.csv', low_memory=False)
     y_train = pd.read_csv('data_train/y_train.csv', low_memory=False).squeeze()
@@ -109,31 +101,125 @@ def main():
     print(f"[main] X_train : {X_train.shape} | y_train : {y_train.shape}")
     print(f"[main] X_val   : {X_val.shape} | y_val   : {y_val.shape}")
 
-    # 2. Feature engineering (fit sur le train, transform sur le val)
+    # Feature engineering
     print("[main] Feature engineering (fit_transform sur X_train, transform sur X_val)...")
     fe = FeatureEngineering()
     X_train_fe = fe.fit_transform(X_train)
     X_val_fe = fe.transform(X_val)
     print(f"[main] X_train_fe : {X_train_fe.shape} | X_val_fe : {X_val_fe.shape}")
 
-    # 3. Liste des modèles à entraîner
-    algos = [
-        ("linreg", "models/linreg_ML.joblib"),
-        ("rf",     "models/random_forest_ML.joblib"),
-        ("xgb",    "models/xgb_ML.joblib"),
-    ]
+    # Sélection du mode
+    print("\n[CHOIX] Veux-tu lancer :\n   1 - ML classique (sklearn, GridSearch)\n   2 - Deep Learning (DLRegressor, Keras)\n")
+    mode = input("Tape 1 pour ML ou 2 pour DL : ").strip()
 
-    # 4. Boucle sur chaque algo
-    for algo, path in algos:
-        print(f"\n[main] ====== Entraînement du modèle {algo} ======")
-        model = MLModeler(model_type=algo, model_path=path)
-        model.fit(X_train_fe, y_train)
-        model.evaluate(X_val_fe, y_val)  # <--- save le scatter
-        model.plot_learning_curve(X_train_fe, y_train)  # <--- save la learning curve
-        model.save()
-        print(f"[main] Modèle {algo} sauvegardé sous {path}\n")
+    if mode == "1":
+        print("\n[main] Lancement du pipeline **ML** classique...")
+        algos = [
+            ("linreg", "models/linreg_ML.joblib"),
+            ("rf",     "models/random_forest_ML.joblib"),
+            ("xgb",    "models/xgb_ML.joblib"),
+        ]
+        for algo, path in algos:
+            print(f"\n[main] ====== Entraînement du modèle {algo} ======")
+            model = MLModeler(model_type=algo, model_path=path)
+            model.fit(X_train_fe, y_train)
+            model.evaluate(X_val_fe, y_val)  # save le scatter
+            model.plot_learning_curve(X_train_fe, y_train)
+            model.save()
+            print(f"[main] Modèle {algo} sauvegardé sous {path}\n")
 
-    print("\n========= PIPELINE MULTI-ALGO TERMINÉ =========\n")
+
+    elif mode == "2":
+
+        print("\n[main] Lancement du pipeline **Deep Learning** (DLRegressor)...")
+
+        from processing_dl import DLRegressor  # Si pas déjà importé au top
+
+        # Architecture profonde + log(y)
+
+        model = DLRegressor(
+
+            hidden_layers=(128, 64, 32, 16),  # Plus profond = plus de flexibilité
+
+            dropout=0.5,  # Dropout modéré (0.1 à 0.2)
+
+            epochs=1000,  # On laisse longtemps mais EarlyStopping arrête au bon moment
+
+            batch_size=128,
+
+            scaler_X=True,  # OBLIGÉ sur tabulaire
+
+            scaler_y=False,  # False car log_target déjà activé
+
+            log_target=True,  # Activation log-transform de la target
+
+            learning_rate=0.001,
+
+            patience=20,  # Laisse-le respirer, ne stoppe pas trop vite (10-20 epochs)
+
+            verbose=1,
+
+            random_state=42
+
+        )
+
+        model.fit(X_train_fe, y_train.values if hasattr(y_train, "values") else y_train)
+
+        y_pred = model.predict(X_val_fe)
+
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+
+        mae = mean_absolute_error(y_val, y_pred)
+
+        r2 = r2_score(y_val, y_pred)
+
+        print("\n--- Évaluation sur validation ---")
+
+        print(f"RMSE : {rmse:,.2f}")
+
+        print(f"MAE  : {mae:,.2f}")
+
+        print(f"R²   : {r2:.3f}")
+
+        # (OPTION) Sauvegarde prédictions et vrai/y_pred pour analyse
+
+        pd.DataFrame({"y_true": y_val, "y_pred": y_pred}).to_csv("results/pred_dl_val.csv", index=False)
+
+        print("[main] Prédictions DL sauvegardées dans results/pred_dl_val.csv")
+
+        # (OPTION) Plot des résidus
+
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(6, 6))
+
+        plt.scatter(y_val, y_pred, alpha=0.3)
+
+        plt.plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], "r--", lw=2)
+
+        plt.xlabel("Valeur réelle")
+
+        plt.ylabel("Prédiction DL")
+
+        plt.title("DLRegressor : Prédiction vs Réel")
+
+        plt.grid()
+
+        plt.tight_layout()
+
+        plt.savefig("results/plots/dl_pred_vs_reality.png", dpi=100)
+
+        plt.show()
+
+        print("[main] Plot DL sauvegardé dans results/plots/dl_pred_vs_reality.png")
+
+
+    else:
+        print("[main] Choix non reconnu. Abandon. Relance et tape 1 ou 2, sois pas borné.")
+
+    print("\n========= PIPELINE TERMINÉ =========\n")
 
 if __name__ == "__main__":
     main()
