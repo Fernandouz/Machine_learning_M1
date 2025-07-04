@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from datetime import datetime
+import shap
+from pyexpat import features
 
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV, learning_curve
@@ -11,6 +13,8 @@ from sklearn.linear_model import LinearRegression
 from xgboost import XGBRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+
+from preprocessing import FeatureEngineering
 
 # Ajoute tqdm pour la barre de progression
 try:
@@ -59,7 +63,7 @@ class MLModeler:
                 'clf__max_depth': [None, 10, 20, 30],
                 'clf__min_samples_split': [2, 5, 10],
                 'clf__min_samples_leaf': [1, 2, 4],
-                'clf__max_features': ['auto', 'sqrt', 'log2'],
+                'clf__maXatures': ['auto', 'sqrt', 'log2'],
                 'clf__bootstrap': [True, False]
             }
             # MAE est souvent préféré pour la robustesse sur outliers en RF
@@ -253,3 +257,161 @@ class MLModeler:
         print(f"[MLModeler] ===== Chargement du modèle depuis {path} =====")
         self.best_model = joblib.load(path)
         print("[MLModeler] Modèle chargé avec succès !")
+
+    def plot_shap_values(self, X, plot_dir="results/shap/", class_index=1):
+        """
+        Affiche et sauvegarde les valeurs SHAP du modèle (si applicable).
+        Fonctionne uniquement avec RandomForest ou XGBoost.
+        """
+        print("\n[MLModeler] ===== Analyse SHAP des features =====")
+
+        if self.model_type not in ["rf", "xgb"]:
+            print("[MLModeler] SHAP non disponible pour ce modèle.")
+            return
+
+        if self.best_model is None:
+            raise Exception("Le modèle doit être entraîné avant d’utiliser SHAP.")
+
+        os.makedirs(plot_dir, exist_ok=True)
+        model = self.best_model.named_steps["clf"]
+        explainer = shap.TreeExplainer(model)
+
+
+
+        print(f"[MLModeler] Calcul des valeurs SHAP sur {X.shape[0]} échantillons...")
+        print(X)
+
+        shap_values = explainer.shap_values(X)
+
+        if isinstance(shap_values, list):
+            print(f"[MLModeler] Modèle binaire détecté, utilisation de la classe {class_index}")
+            shap_values = shap_values[class_index]
+
+        # Résumé SHAP
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        shap_summary_path = os.path.join(plot_dir, f"shap_summary_{self.model_type}_{timestamp}.png")
+        print(f"[MLModeler] Sauvegarde du résumé SHAP sous {shap_summary_path}")
+        plt.figure()
+        shap.summary_plot(shap_values, X, show=False)
+        plt.tight_layout()
+        plt.savefig(shap_summary_path)
+        plt.close()
+
+        print("[MLModeler] Analyse SHAP terminée.")
+
+    def plot_shap_summary_bar(self, X, plot_dir="results/shap/", class_index=1):
+        """
+        Trace un summary_plot de type bar pour l'importance moyenne des features.
+        """
+        if self.model_type not in ["rf", "xgb"]:
+            return
+
+        print("\n[MLModeler] Résumé SHAP (bar plot) des variables les plus impactantes...")
+        model = self.best_model.named_steps["clf"]
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X)
+        if isinstance(shap_values, list):
+            shap_values = shap_values[class_index]
+
+        os.makedirs(plot_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        path = os.path.join(plot_dir, f"shap_bar_{self.model_type}_{timestamp}.png")
+
+        plt.figure()
+        shap.summary_plot(shap_values, X, plot_type="bar", show=False)
+        plt.tight_layout()
+        plt.savefig(path)
+        plt.close()
+        print(f"[MLModeler] SHAP bar plot sauvegardé dans {path}")
+
+    def plot_shap_dependence(self, X, plot_dir="results/shap/", class_index=1):
+        """
+        Trace des scatter plots SHAP value pour une sélection de features.
+        """
+        if self.model_type not in ["rf", "xgb"]:
+            return
+
+        model = self.best_model.named_steps["clf"]
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X)
+        if isinstance(shap_values, list):
+            shap_values = shap_values[class_index]
+
+        features = None
+
+        if self.model_type == "rf":
+            features = ["nombre_lots", "surface_reelle_bati", "prix_m2_quartier", "section_prefixe"]
+
+        if self.model_type == "xgb":
+            features = ["nombre_lots", "surface_reelle_bati", "prix_m2_quartier", "type_local_Appartement"]
+
+        features = features or list(X.columns[:5])
+        features = [f for f in features if f in X.columns]
+
+        n_features = len(features)
+        os.makedirs(plot_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        fig, axes = plt.subplots(1, n_features, figsize=(5 * n_features, 5), constrained_layout=True)
+        if n_features == 1:
+            axes = [axes]
+
+        for i, col in enumerate(features):
+            ax = axes[i]
+            scatter = ax.scatter(
+                X[col],
+                shap_values[:, X.columns.get_loc(col)],
+                c=X[col],
+                cmap="viridis",
+                alpha=0.7
+            )
+            # Point d’intérêt arbitraire : le 5ème (ajustable)
+            ax.scatter(
+                X.iloc[5][col],
+                shap_values[5, X.columns.get_loc(col)],
+                color='red',
+                edgecolor='black',
+                s=100,
+                label="Obs. n°5"
+            )
+            ax.set_xlabel(col)
+            ax.set_ylabel("SHAP value")
+            ax.set_title(f"SHAP - {col}")
+            ax.legend()
+            fig.colorbar(scatter, ax=ax, label=col)
+
+        path = os.path.join(plot_dir, f"shap_dependence_{self.model_type}_{timestamp}.png")
+        plt.savefig(path)
+        plt.close()
+        print(f"[MLModeler] SHAP dependence plots sauvegardés dans {path}")
+
+    def plot_shap_waterfall(self, X, instance_index=5, plot_dir="results/shap/", class_index=1):
+        """
+        Affiche un waterfall plot SHAP pour une instance.
+        """
+        if self.model_type not in ["rf", "xgb"]:
+            return
+
+        model = self.best_model.named_steps["clf"]
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X)
+        if isinstance(shap_values, list):
+            shap_values = shap_values[class_index]
+            base_value = explainer.expected_value[class_index]
+        else:
+            base_value = explainer.expected_value
+
+        os.makedirs(plot_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        path = os.path.join(plot_dir, f"shap_waterfall_{self.model_type}_obs{instance_index}_{timestamp}.png")
+
+        shap_obj = shap.Explanation(
+            values=shap_values[instance_index],
+            base_values=base_value,
+            data=X.iloc[instance_index],
+            feature_names=X.columns
+        )
+        shap.plots.waterfall(shap_obj, show=False)
+        plt.tight_layout()
+        plt.savefig(path)
+        plt.close()
+        print(f"[MLModeler] SHAP waterfall plot sauvegardé dans {path}")

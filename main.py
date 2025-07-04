@@ -109,8 +109,11 @@ def main():
     print(f"[main] X_train_fe : {X_train_fe.shape} | X_val_fe : {X_val_fe.shape}")
 
     # Sélection du mode
-    print("\n[CHOIX] Veux-tu lancer :\n   1 - ML classique (sklearn, GridSearch)\n   2 - Deep Learning (DLRegressor, Keras)\n")
-    mode = input("Tape 1 pour ML ou 2 pour DL : ").strip()
+    print("\n[CHOIX] Veux-tu lancer :\n"
+          "   1 - ML classique (sklearn, GridSearch)\n"
+          "   2 - Deep Learning (DLRegressor, Keras)\n"
+          "   3 - Interprétation SHAP (RandomForest / XGBoost)\n")
+    mode = input("Tape 1, 2 ou 3 : ").strip()
 
     if mode == "1":
         print("\n[main] Lancement du pipeline **ML** classique...")
@@ -214,6 +217,24 @@ def main():
         plt.show()
 
         print("[main] Plot DL sauvegardé dans results/plots/dl_pred_vs_reality.png")
+
+    elif mode == "3":
+        print("\n[main] Interprétation SHAP pour modèles ML existants...")
+
+        for algo, path in [("rf", "models/random_forest_ML.joblib"), ("xgb", "models/xgb_ML.joblib")]:
+            if not os.path.exists(path):
+                print(f"[main] ⚠️ Modèle {algo} non trouvé ({path}). Skippé.")
+                continue
+
+            print(f"\n[main] ====== Analyse SHAP du modèle {algo} ======")
+            model = MLModeler(model_type=algo, model_path=path)
+            model.load(path)
+            # model.plot_shap_values(X_val_fe)
+            model.plot_shap_summary_bar(X_val_fe)
+            model.plot_shap_dependence(
+                X_val_fe,
+            )
+            model.plot_shap_waterfall(X_val_fe, instance_index=5)
 
 
     else:
